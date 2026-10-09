@@ -195,15 +195,45 @@ async function plannerConnect(){
     status('✓ Device connected • ready to sync');
   }catch(e){status('Connection failed');alert('Could not connect: '+e.message)}
 }
+/* Large handwriting is stored separately in Drive; local pages keep full strokes. */
+const PLANNER_SHEET_LIMIT=45000;
+function plannerSheetRecord(r){
+  if(JSON.stringify(r).length<=PLANNER_SHEET_LIMIT)return r;
+  if(r.type!=='bookpage'||!Array.isArray(r.strokes)||!r.strokes.length)
+    throw Error('An oversized record cannot be separated safely: '+r.type+' ('+r.id+').');
+  const small={...r,strokes:[],handwritingInDrive:true};
+  if(JSON.stringify(small).length>PLANNER_SHEET_LIMIT)
+    throw Error('Notebook page metadata is too large: '+r.id);
+  return small;
+}
+async function plannerRestoreCloudInk(remote){
+  const hydrated=[];
+  for(const r of remote){
+    if(r.type==='bookpage'&&r.handwritingInDrive){
+      const local=records.find(x=>x.id===r.id);
+      // Never replace newer locally edited handwriting with a cloud copy.
+      if(local&&Array.isArray(local.strokes)&&local.strokes.length&&
+          String(local.updatedAt||'')>=String(r.updatedAt||'')){
+        hydrated.push({...r,strokes:local.strokes});continue;
+      }
+      status('Downloading handwriting…');
+      const response=await plannerRequest({action:'downloadHandwriting',token:plannerToken(),recordId:r.id});
+      const strokes=response.inkData??response.data?.inkData;
+      if(!Array.isArray(strokes))throw Error('Handwriting missing in Drive for page '+r.id+'. Local data unchanged.');
+      hydrated.push({...r,strokes});
+    }else hydrated.push(r);
+  }
+  return hydrated;
+}
 async function plannerRefresh(){
   if(!plannerToken())return alert('Please tap Connect Device first.');
   try{
     status('Refreshing cloud records…');
     const result=await plannerRequest({action:'pull',token:plannerToken()});
     const remote=result.records||result.data?.records;
-    if(!Array.isArray(remote))throw Error('No records array returned.');
-    if(!remote.every(r=>r&&typeof r.id==='string'))throw Error('Invalid cloud record format.');
-    mergeRecords(remote);
+    if(!Array.isArray(remote)||!remote.every(r=>r&&typeof r.id==='string'))throw Error('Invalid cloud records.');
+    const full=await plannerRestoreCloudInk(remote);
+    mergeRecords(full);
     status('✓ Refreshed '+remote.length+' cloud records • local changes preserved');
   }catch(e){status('Refresh failed • local records unchanged');alert('Refresh failed: '+e.message)}
 }
@@ -214,13 +244,21 @@ async function plannerSyncNow(){
     const pulled=await plannerRequest({action:'pull',token:plannerToken()});
     const cloud=pulled.records||pulled.data?.records;
     if(!Array.isArray(cloud)||!cloud.every(r=>r&&typeof r.id==='string'))throw Error('Could not verify cloud records. Nothing uploaded.');
-    mergeRecords(cloud);
-    const oversized=records.filter(r=>JSON.stringify(r).length>45000);
-    if(oversized.length){status('Sync stopped • oversized notebook records');return alert(oversized.length+' entry/entries are larger than the Google Sheets cell limit. No entries were uploaded. Export a backup first; handwriting may need a separate storage solution.');}
+    const hydrated=await plannerRestoreCloudInk(cloud);
+    mergeRecords(hydrated);
+    const prepared=records.map(plannerSheetRecord);
+    // Upload handwriting first. If any upload fails, do not publish incomplete pages.
+    for(let i=0;i<records.length;i++){
+      if(prepared[i].handwritingInDrive){
+        status('Uploading handwriting '+(i+1)+' of '+records.length+'…');
+        const answer=await plannerRequest({action:'uploadHandwriting',token:plannerToken(),recordId:records[i].id,inkData:records[i].strokes});
+        if(answer.success===false)throw Error('Handwriting upload failed for '+records[i].id);
+      }
+    }
     let saved=0;
-    for(let i=0;i<records.length;i+=50){
-      const batch=records.slice(i,i+50);
-      status('Uploading '+Math.min(i+batch.length,records.length)+' of '+records.length+'…');
+    for(let i=0;i<prepared.length;i+=50){
+      const batch=prepared.slice(i,i+50);
+      status('Uploading '+Math.min(i+batch.length,prepared.length)+' of '+prepared.length+'…');
       await plannerRequest({action:'push',token:plannerToken(),records:batch});
       saved+=batch.length;
     }
