@@ -39,7 +39,7 @@ function togglePlannerSettings(force){const menu=document.getElementById('planne
 document.addEventListener('click',e=>{if(!e.target.closest('.settings-wrap'))togglePlannerSettings(false)});
 function localDay(d=new Date()){return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-')}
 function dateObj(s){return new Date(s+'T12:00:00')}function uid(){return 'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,10)}
-function load(){try{records=JSON.parse(localStorage.getItem(KEY)||'[]');if(!Array.isArray(records))records=[]}catch(e){records=[]}}function persist(){localStorage.setItem(KEY,JSON.stringify(records));status('Saved on this device • make a backup regularly')}
+function load(){try{records=JSON.parse(localStorage.getItem(KEY)||'[]');if(!Array.isArray(records))records=[]}catch(e){records=[]}}function persist(){localStorage.setItem(KEY,JSON.stringify(records));status('Saved on this device • cloud sync queued');plannerQueueAutoSync()}
 function status(s){document.getElementById('status').textContent=s}function active(){return records.filter(r=>!r.deleted)}function onDay(d){return active().filter(r=>r.date===d&&r.type!=='ink').sort((a,b)=>(a.time||'').localeCompare(b.time||''))}
 function saveRecord(r){r.updatedAt=new Date().toISOString();const i=records.findIndex(x=>x.id===r.id);if(i<0)records.push(r);else records[i]=r;persist();render()}
 function render(){const tabs=[['month','📅 Month'],['week','🗓️ Week'],['day','☀️ Day'],['tasks','✅ Tasks'],['journal','📖 Journal'],['notebook','✍️ Notebook'],['budget','💰 Budget']];document.getElementById('nav').innerHTML=tabs.map(([v,n])=>`<button class="btn ${v===view?'active':''}" onclick="setView('${v}')">${n}</button>`).join('');const c=document.getElementById('content');c.innerHTML=view==='month'?monthHTML():view==='week'?weekHTML():view==='day'?dayHTML():view==='tasks'?listHTML('task','My Tasks'):view==='journal'?listHTML('journal','My Journal'):view==='budget'?budgetHTML():notebookHTML();if(view==='notebook'&&pageId)initInk()}
@@ -200,7 +200,7 @@ async function plannerConnect(){
     const token=result.token||result.deviceToken||result.data?.token;
     if(!token)throw Error('Authorisation did not return a device token.');
     localStorage.setItem(PLANNER_TOKEN_KEY,token);
-    status('✓ Device connected • ready to sync');
+    status('✓ Device connected • automatic sync enabled');plannerQueueAutoSync();
   }catch(e){status('Connection failed');alert('Could not connect: '+e.message)}
 }
 /* Large handwriting is stored separately in Drive; local pages keep full strokes. */
@@ -245,8 +245,11 @@ async function plannerRefresh(){
     status('✓ Refreshed '+remote.length+' cloud records • local changes preserved');
   }catch(e){status('Refresh failed • local records unchanged');alert('Refresh failed: '+e.message)}
 }
-async function plannerSyncNow(){
-  if(!plannerToken())return alert('Please tap Connect Device first.');
+async function plannerSyncNow(options={}){
+  const automatic=options.automatic===true;
+  if(!plannerToken()){if(!automatic)alert('Please tap Connect Device first.');return false;}
+  if(plannerSyncBusy){plannerSyncAgain=true;return false;}
+  plannerSyncBusy=true;
   try{
     status('Checking cloud before upload…');
     const pulled=await plannerRequest({action:'pull',token:plannerToken()});
@@ -271,9 +274,31 @@ async function plannerSyncNow(){
       saved+=batch.length;
     }
     status('✓ Cloud sync completed • '+saved+' entries sent');
-  }catch(e){status('Sync failed • local records retained');alert('Sync failed: '+e.message)}
+    plannerLastSync=Date.now();return true;
+  }catch(e){status('Sync failed • local records retained');if(!automatic)alert('Sync failed: '+e.message);else console.warn('Automatic planner sync:',e);return false;}
+  finally{plannerSyncBusy=false;if(plannerSyncAgain){plannerSyncAgain=false;plannerQueueAutoSync();}}
 }
 
+/* Automatic sync: local-first, debounced, and serialized. Runs only while the app is active. */
+let plannerSyncTimer=null,plannerSyncBusy=false,plannerSyncAgain=false,plannerLastSync=0;
+function plannerQueueAutoSync(){
+  if(!plannerToken())return;
+  clearTimeout(plannerSyncTimer);
+  plannerSyncTimer=setTimeout(()=>{
+    if(document.visibilityState==='visible'&&navigator.onLine)plannerSyncNow({automatic:true});
+  },3500);
+}
+function plannerResumeSync(){
+  if(!plannerToken()||!navigator.onLine)return;
+  if(document.visibilityState==='visible')plannerQueueAutoSync();
+}
+window.addEventListener('online',plannerResumeSync);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)plannerResumeSync();});
+window.addEventListener('focus',plannerResumeSync);
+// Check for updates while the app stays open, without running background timers.
+setInterval(()=>{
+  if(!document.hidden&&plannerToken()&&navigator.onLine&&Date.now()-plannerLastSync>120000)plannerQueueAutoSync();
+},120000);
 load();render();
 </script><script>
 if ('serviceWorker' in navigator) {
