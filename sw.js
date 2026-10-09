@@ -1,4 +1,4 @@
-const CACHE_NAME = 'myplanner-shell-v1-pen-fix-v3';
+const CACHE_NAME = 'myplanner-combined-notebook-v1';
 const APP_FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(APP_FILES)).then(() => self.skipWaiting()));
