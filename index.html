@@ -58,7 +58,7 @@ function monthHTML(){
  const journal=monthly.filter(r=>r.type==='journal').sort((a,b)=>b.date.localeCompare(a.date));
  const tasks=monthly.filter(r=>r.type==='task').sort((a,b)=>a.date.localeCompare(b.date));
  const todayDate=dateObj(localDay()),weekBegin=new Date(todayDate);weekBegin.setDate(todayDate.getDate()-todayDate.getDay());const weekEnd=new Date(weekBegin);weekEnd.setDate(weekBegin.getDate()+6);const weekFirst=localDay(weekBegin),weekLast=localDay(weekEnd);
- const appointments=active().filter(r=>r.type==='appointment'&&r.date>=weekFirst&&r.date<=weekLast).sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.time||'').localeCompare(b.time||''));
+ const appointments=active().filter(r=>r.type==='appointment'&&r.date>=weekFirst&&r.date<=weekLast&&(r.date>=localDay()||appointmentStatus(r)==='scheduled')).sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.time||'').localeCompare(b.time||''));
  let cells=Array.from({length:start},()=>'<div class="day empty"></div>');
  for(let n=1;n<=count;n++){
   const d=localDay(new Date(y,m,n));
